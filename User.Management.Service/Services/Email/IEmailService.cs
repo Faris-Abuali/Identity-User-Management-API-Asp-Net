@@ -1,6 +1,6 @@
 ﻿using User.Management.Service.Models;
 
-namespace User.Management.Service.Services;
+namespace User.Management.Service.Services.Email;
 
 public interface IEmailService
 {

@@ -7,6 +7,8 @@ Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "User.Management.API", "User
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "User.Management.Service", "User.Management.Service\User.Management.Service.csproj", "{5816E92A-EC23-4AF2-9F71-2163B770B7AB}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBD}") = "User.Management.Contracts", "User.Management.Contracts\User.Management.Contracts.csproj", "{5816E92A-EC23-4AF2-9F71-2163B770B7AC}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU

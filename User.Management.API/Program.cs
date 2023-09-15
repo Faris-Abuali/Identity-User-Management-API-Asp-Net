@@ -3,7 +3,8 @@ using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using User.Management.API.Models;
 using User.Management.Service.Models;
-using User.Management.Service.Services;
+using User.Management.Service.Services.User;
+using User.Management.Service.Services.Email;
 using Microsoft.IdentityModel.Tokens;
 using System.Text;
 using Microsoft.OpenApi.Models;
@@ -60,9 +61,10 @@ var emailConfig = builder.Configuration
     .GetSection("EmailConfiguration")
     .Get<EmailConfiguration>();
 
-builder.Services.AddSingleton(emailConfig);
+builder.Services.AddSingleton(emailConfig!);
 
 builder.Services.AddScoped<IEmailService, EmailService>();
+builder.Services.AddScoped<IUserService, UserService>();
 
 builder.Services.AddControllers();
 // Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle

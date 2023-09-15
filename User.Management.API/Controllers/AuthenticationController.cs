@@ -1,16 +1,19 @@
 ﻿using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
 using User.Management.API.Models;
-using User.Management.API.Models.Authentication.SignUp;
-using User.Management.Service.Services;
+using User.Management.Service.Services.User;
+using User.Management.Service.Services.Email;
 using User.Management.Service.Models;
-using User.Management.API.Models.Authentication.Login;
 using System.Security.Claims;
 using Microsoft.IdentityModel.Tokens;
 using System.Text;
 using System.IdentityModel.Tokens.Jwt;
 using System.ComponentModel.DataAnnotations;
 using Microsoft.AspNetCore.Authorization;
+using User.Management.Service.Models.Authentication.Login;
+using User.Management.Service.Models.Authentication.SignUp;
+using RegisterUserRequest = User.Management.Contracts.User.RegisterUserRequest;
+using UserModel = User.Management.Service.Models.User;
 
 namespace User.Management.API.Controllers;
 
@@ -22,77 +25,67 @@ public class AuthenticationController : ControllerBase
     private readonly SignInManager<IdentityUser> _signInManager;
     private readonly RoleManager<IdentityRole> _roleManager;
     private readonly IEmailService _emailService;
+    private readonly IUserService _userService;
     private readonly IConfiguration _configuration;
 
     public AuthenticationController(UserManager<IdentityUser> userManager,
         RoleManager<IdentityRole> roleManager,
         SignInManager<IdentityUser> signInManager,
+        IUserService userService,
         IEmailService emailService,
-        IConfiguration configuration
-        )
+        IConfiguration configuration)
     {
         _userManager = userManager;
         _roleManager = roleManager;
         _signInManager = signInManager;
+        _userService = userService;
         _emailService = emailService;
         _configuration = configuration;
     }
 
     [HttpPost]
     [Route("register")]
-    public async Task<IActionResult> Register([FromBody] RegisterUserDto registerUserModel, string role)
+    public async Task<IActionResult> Register([FromBody] RegisterUserRequest request)
     {
-        // Check if user exists
-        var userExists = await _userManager.FindByEmailAsync(registerUserModel.Email);
+        var userModel = UserModel.From(request);
 
-        if (userExists != null)
+        var createUserResult = await _userService.CreateUserWithTokenAsync(userModel);
+
+        if (!createUserResult.IsSuccess)
         {
-            return StatusCode(StatusCodes.Status403Forbidden,
-                new Response { Status = "Error", Message = "User already exists!" });
+            return StatusCode(
+                statusCode: createUserResult.StatusCode,
+                value: new Response { Status = "Success", Message = createUserResult.Message, IsSuccess = true });
         }
 
-        // Add the user to the database
-        IdentityUser user = new()
-        {
-            Email = registerUserModel.Email,
-            SecurityStamp = Guid.NewGuid().ToString(),
-            UserName = registerUserModel.Username,
-            TwoFactorEnabled = true
-        };
+        var user = createUserResult.Response!.User;
 
-        if (!await _roleManager.RoleExistsAsync(role))
+        if (request.Roles is not null)
         {
-            return StatusCode(StatusCodes.Status500InternalServerError,
-             new Response { Status = "Error", Message = "This role doesn't exist" });
+            // Assign roles to the user
+            await _userService.AssignRolesToUserAsync(request.Roles, user);
         }
 
-        // Create user
-        var result = await _userManager.CreateAsync(user, registerUserModel.Password);
-
-
-        if (!result.Succeeded)
-        {
-            return StatusCode(StatusCodes.Status500InternalServerError,
-                 new Response { Status = "Error", Message = "User failed to create!" });
-        }
-
-        // Assign the user a role
-        await _userManager.AddToRoleAsync(user, role);
-
-        // Generate a token to be sent within the email so that user can click the link and confirm their registration
-        var token = await _userManager.GenerateEmailConfirmationTokenAsync(user);
+        var token = createUserResult.Response!.Token;
 
         // The link once clicked will lead the user to the action method whose name is `ConfirmEmail`
-        var confirmationLink = Url.Action(nameof(ConfirmEmail), "Authentication", new { token, email = user.Email }, Request.Scheme);
+        var confirmationLink = Url.Action(nameof(ConfirmEmail), "Authentication", new { token, email = request.Email },
+            Request.Scheme);
 
-        // Specify the email recepient(s) and prepare the email subject and content
-        var message = new Message(new string[] { user.Email }, "Account Confirmation", confirmationLink!);
+        // Specify the email recipient(s) and prepare the email subject and content
+        var message = new Message(new string[] { userModel.Email }, "Account Confirmation", confirmationLink!);
 
         // Now send the email
         _emailService.SendEmail(message);
 
-        return StatusCode(StatusCodes.Status201Created,
-            new Response { Status = "Success", Message = $"User Created and Email sent to {user.Email} successfully" });
+        return StatusCode(
+            StatusCodes.Status201Created,
+            new Response
+            {
+                Status = "Success",
+                Message = $"User Created and Email sent to {request.Email} successfully",
+                IsSuccess = true
+            });
     }
 
     [HttpGet("confirm-email")]
@@ -103,7 +96,7 @@ public class AuthenticationController : ControllerBase
         if (user == null)
         {
             return StatusCode(StatusCodes.Status400BadRequest,
-                    new Response { Status = "Error", Message = "No user with this email exists!" });
+                new Response { Status = "Error", Message = "No user with this email exists!" });
         }
 
         var result = await _userManager.ConfirmEmailAsync(user, token);
@@ -126,8 +119,9 @@ public class AuthenticationController : ControllerBase
         var user = await _userManager.FindByNameAsync(loginUserDto.Username);
 
         // ------------- Two Factor Authentication -------------
-        if (user.TwoFactorEnabled)
+        if (user is not null && user.TwoFactorEnabled)
         {
+            
             await _signInManager.SignOutAsync(); // Signs the current user out of the app.
 
             await _signInManager.PasswordSignInAsync(
@@ -138,8 +132,10 @@ public class AuthenticationController : ControllerBase
 
             var token = await _userManager.GenerateTwoFactorTokenAsync(user, TokenOptions.DefaultEmailProvider);
 
+            var email = user.Email ?? "";
+
             // Specify the email recepient(s) and prepare the email subject and content
-            var message = new Message(new string[] { user.Email }, "Two Factor OTP Confirmation", token!);
+            var message = new Message(new string[] { email }, "Two Factor OTP Confirmation", token!);
 
             // Now send the email
             _emailService.SendEmail(message);
@@ -204,7 +200,7 @@ public class AuthenticationController : ControllerBase
         }
 
         return StatusCode(StatusCodes.Status404NotFound,
-                new Response { Status = "Error", Message = "Invalid Two Factor OTP Code" });
+            new Response { Status = "Error", Message = "Invalid Two Factor OTP Code" });
     }
 
     [HttpPost]
@@ -217,14 +213,15 @@ public class AuthenticationController : ControllerBase
         if (user is null)
         {
             return StatusCode(StatusCodes.Status400BadRequest,
-                 new Response
-                 { Status = "Error", Message = $"Couldn't send link to the specified email: ${email}" });
+                new Response
+                    { Status = "Error", Message = $"Couldn't send link to the specified email: ${email}" });
         }
 
         var token = await _userManager.GeneratePasswordResetTokenAsync(user);
 
         // The link once clicked will lead the user to the action method whose name is `ResetPassword`
-        var forgotPasswordLink = Url.Action(nameof(ResetPassword), "Authentication", new { token, email = user.Email }, Request.Scheme);
+        var forgotPasswordLink = Url.Action(nameof(ResetPassword), "Authentication", new { token, email = user.Email },
+            Request.Scheme);
 
         // Specify the email recepient(s) and prepare the email subject and content
         var message = new Message(new string[] { user.Email! }, "Forgot Password Link", forgotPasswordLink!);
@@ -233,7 +230,11 @@ public class AuthenticationController : ControllerBase
         _emailService.SendEmail(message);
 
         return StatusCode(StatusCodes.Status200OK,
-             new Response { Status = "Success", Message = $"Reset Forgotten Password Request has been sent to email: {user.Email}" }); ;
+            new Response
+            {
+                Status = "Success", Message = $"Reset Forgotten Password Request has been sent to email: {user.Email}"
+            });
+        ;
     }
 
 
@@ -255,22 +256,31 @@ public class AuthenticationController : ControllerBase
         if (user is null)
         {
             return StatusCode(StatusCodes.Status400BadRequest,
-                 new Response
-                 { Status = "Error", Message = $"Couldn't find a user with the specified email: ${resetPasswordDto.Email}" });
+                new Response
+                {
+                    Status = "Error",
+                    Message = $"Couldn't find a user with the specified email: ${resetPasswordDto.Email}"
+                });
         }
 
-        var resetPasswordResult = await _userManager.ResetPasswordAsync(user, resetPasswordDto.Token, resetPasswordDto.Password);
+        var resetPasswordResult =
+            await _userManager.ResetPasswordAsync(user, resetPasswordDto.Token, resetPasswordDto.Password);
 
         if (!resetPasswordResult.Succeeded)
         {
             resetPasswordResult.Errors.ToList().ForEach(error =>
-            ModelState.AddModelError(error.Code, error.Description));
+                ModelState.AddModelError(error.Code, error.Description));
 
             return BadRequest(ModelState);
         }
 
         return StatusCode(StatusCodes.Status200OK,
-             new Response { Status = "Success", Message = $"Password has successfully been reset for account with email: {user.Email}" }); ;
+            new Response
+            {
+                Status = "Success",
+                Message = $"Password has successfully been reset for account with email: {user.Email}"
+            });
+        ;
     }
 
     private JwtSecurityToken GenerateToken(List<Claim> claims)
@@ -282,7 +292,8 @@ public class AuthenticationController : ControllerBase
         var audience = _configuration["Jwt:Audience"];
         var signingCredentials = new SigningCredentials(authSigningKey, SecurityAlgorithms.HmacSha256);
 
-        var token = new JwtSecurityToken(issuer, audience, claims, null, DateTime.Now.AddDays(7), signingCredentials);
+        var token = new JwtSecurityToken(issuer, audience, claims, null, DateTime.Now.AddDays(7),
+            signingCredentials);
 
 
         return token;
