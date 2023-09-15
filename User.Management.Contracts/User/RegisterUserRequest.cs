@@ -9,7 +9,8 @@ public record RegisterUserRequest(
     [Required(ErrorMessage = "Password is required")]
     string Password,
     [Required(ErrorMessage = "Role is required")]
-    List<string>? Roles);
+    List<string>? Roles,
+    bool TwoFactorEnabled = false);
 
 
 // public class RegisterUserRequest

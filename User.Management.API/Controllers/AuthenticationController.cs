@@ -9,8 +9,8 @@ using Microsoft.IdentityModel.Tokens;
 using System.Text;
 using System.IdentityModel.Tokens.Jwt;
 using System.ComponentModel.DataAnnotations;
+using MapsterMapper;
 using Microsoft.AspNetCore.Authorization;
-using User.Management.Service.Models.Authentication.Login;
 using User.Management.Service.Models.Authentication.SignUp;
 using RegisterUserRequest = User.Management.Contracts.User.RegisterUserRequest;
 using UserModel = User.Management.Service.Models.User;
@@ -27,13 +27,15 @@ public class AuthenticationController : ControllerBase
     private readonly IEmailService _emailService;
     private readonly IUserService _userService;
     private readonly IConfiguration _configuration;
+    private readonly IMapper _mapper;
 
     public AuthenticationController(UserManager<IdentityUser> userManager,
         RoleManager<IdentityRole> roleManager,
         SignInManager<IdentityUser> signInManager,
         IUserService userService,
         IEmailService emailService,
-        IConfiguration configuration)
+        IConfiguration configuration, 
+        IMapper mapper)
     {
         _userManager = userManager;
         _roleManager = roleManager;
@@ -41,15 +43,17 @@ public class AuthenticationController : ControllerBase
         _userService = userService;
         _emailService = emailService;
         _configuration = configuration;
+        _mapper = mapper;
     }
 
     [HttpPost]
     [Route("register")]
     public async Task<IActionResult> Register([FromBody] RegisterUserRequest request)
     {
-        var userModel = UserModel.From(request);
+        // var userModel = UserModel.From(request);
+        var createUserDto = _mapper.Map<CreateUserDto>(request);
 
-        var createUserResult = await _userService.CreateUserWithTokenAsync(userModel);
+        var createUserResult = await _userService.CreateUserWithTokenAsync(createUserDto);
 
         if (!createUserResult.IsSuccess)
         {
@@ -73,7 +77,7 @@ public class AuthenticationController : ControllerBase
             Request.Scheme);
 
         // Specify the email recipient(s) and prepare the email subject and content
-        var message = new Message(new string[] { userModel.Email }, "Account Confirmation", confirmationLink!);
+        var message = new Message(new string[] { user.Email }, "Account Confirmation", confirmationLink!);
 
         // Now send the email
         _emailService.SendEmail(message);
@@ -118,24 +122,27 @@ public class AuthenticationController : ControllerBase
         // Checking user
         var user = await _userManager.FindByNameAsync(loginUserDto.Username);
 
-        // ------------- Two Factor Authentication -------------
-        if (user is not null && user.TwoFactorEnabled)
+        if (user is null)
         {
+            return StatusCode(StatusCodes.Status401Unauthorized,
+                new Response { Status = "Error", Message = "Invalid login credentials" });        
+        }
+
+        // ------------- Two Factor Authentication -------------
+        if (user.TwoFactorEnabled)
+        {
+            if (user.Email is null)
+            {
+                return StatusCode(StatusCodes.Status400BadRequest,
+                    new Response { Status = "Error", Message = "Email is required for Two Factor Authentication" });
+            }
             
-            await _signInManager.SignOutAsync(); // Signs the current user out of the app.
-
-            await _signInManager.PasswordSignInAsync(
-                user,
-                password: loginUserDto.Password,
-                isPersistent: false, // whether the sign-in cookie should persist after the browser is closed
-                lockoutOnFailure: true); // whether the user account should be locked if the sign in fails
-
-            var token = await _userManager.GenerateTwoFactorTokenAsync(user, TokenOptions.DefaultEmailProvider);
-
-            var email = user.Email ?? "";
-
-            // Specify the email recepient(s) and prepare the email subject and content
-            var message = new Message(new string[] { email }, "Two Factor OTP Confirmation", token!);
+            var loginModel = _mapper.Map<LoginDto>(loginUserDto);
+            var getOtpResult = await _userService.GetOtpByLoginAsync(loginModel, user);
+            var token = getOtpResult.Response;
+            
+            // Specify the email recipient(s) and prepare the email subject and content
+            var message = new Message(new string[] { user.Email }, "Two Factor OTP Confirmation", token!);
 
             // Now send the email
             _emailService.SendEmail(message);
@@ -145,26 +152,22 @@ public class AuthenticationController : ControllerBase
         }
         // ------------- End of Two Factor Authentication -------------
 
-        if (user == null)
-        {
-            return Unauthorized();
-        }
-
         // Checking password
         var isValidPassword = await _userManager.CheckPasswordAsync(user, loginUserDto.Password);
 
         if (!isValidPassword)
         {
-            return Unauthorized();
+            return StatusCode(StatusCodes.Status401Unauthorized,
+                new Response { Status = "Error", Message = "Invalid login credentials" });
         }
 
-        //var isEmailConfirmed = user.EmailConfirmed;
+        var isEmailConfirmed = user.EmailConfirmed;
 
-        //if (!isEmailConfirmed)
-        //{
-        //    return StatusCode(StatusCodes.Status403Forbidden,
-        //        new Response { Status = "Error", Message = "You must confirm you email then login" });
-        //}
+        if (!isEmailConfirmed)
+        {
+            return StatusCode(StatusCodes.Status403Forbidden,
+                new Response { Status = "Error", Message = "You must confirm you email then login" });
+        }
 
         var jwtToken = await GenerateAndReturnJwtToken(user);
 
@@ -181,26 +184,32 @@ public class AuthenticationController : ControllerBase
     {
         var user = await _userManager.FindByNameAsync(username);
 
-        // This validates the two factor sign in code & creates & signs in the user
-        var signIn = await _signInManager.TwoFactorSignInAsync(
-            provider: TokenOptions.DefaultEmailProvider,
-            code,
-            isPersistent: false, // whether the sign-in cookie should persist after the browser is closed.
-            rememberClient: false); // whether the current browser should remember, suppressing all further two factor authentication prompts.
-
-        if (signIn.Succeeded && user is not null)
+        if (user is null)
         {
-            var jwtToken = await GenerateAndReturnJwtToken(user);
-
-            return Ok(new
-            {
-                token = new JwtSecurityTokenHandler().WriteToken(jwtToken),
-                expiration = jwtToken.ValidTo
-            });
+            return StatusCode(StatusCodes.Status404NotFound,
+                new Response { Status = "Error", Message = "Invalid Two Factor OTP Code" });
         }
 
-        return StatusCode(StatusCodes.Status404NotFound,
-            new Response { Status = "Error", Message = "Invalid Two Factor OTP Code" });
+        // This validates the two factor sign in code & creates & signs in the user
+        var signInResult = await _signInManager.TwoFactorSignInAsync(
+            provider: TokenOptions.DefaultEmailProvider,
+            code,
+            isPersistent: true, // whether the sign-in cookie should persist after the browser is closed.
+            rememberClient: true); // whether the current browser should remember, suppressing all further two factor authentication prompts.
+
+        if (!signInResult.Succeeded)
+        {
+            return StatusCode(StatusCodes.Status400BadRequest,
+                new Response { Status = "Error", Message = "Invalid Two Factor OTP Code" });
+        }
+
+        var jwtToken = await GenerateAndReturnJwtToken(user);
+
+        return Ok(new
+        {
+            token = new JwtSecurityTokenHandler().WriteToken(jwtToken),
+            expiration = jwtToken.ValidTo
+        });
     }
 
     [HttpPost]
@@ -283,7 +292,7 @@ public class AuthenticationController : ControllerBase
         ;
     }
 
-    private JwtSecurityToken GenerateToken(List<Claim> claims)
+    private JwtSecurityToken GenerateToken(IEnumerable<Claim> claims)
     {
         var authSigningKey = new SymmetricSecurityKey(
             Encoding.UTF8.GetBytes(_configuration["Jwt:Key"]!));
@@ -295,17 +304,16 @@ public class AuthenticationController : ControllerBase
         var token = new JwtSecurityToken(issuer, audience, claims, null, DateTime.Now.AddDays(7),
             signingCredentials);
 
-
         return token;
     }
 
     private async Task<JwtSecurityToken> GenerateAndReturnJwtToken(IdentityUser user)
     {
-        // Claimslist creation
+        // Claims list creation
         var authClaims = new List<Claim>
         {
-            new Claim(ClaimTypes.Name, user.UserName!),
-            new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString())
+            new(ClaimTypes.Name, user.UserName!),
+            new(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString())
         };
 
         // Add roles to the claims list

@@ -1,7 +1,6 @@
 ﻿using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Identity;
 using User.Management.Service.Models;
-using User.Management.Service.Results;
 
 namespace User.Management.Service.Services.User;
 
@@ -21,7 +20,7 @@ public class UserService : IUserService
         _roleManager = roleManager;
     }
 
-    public async Task<ApiResponse<CreateUserResult>> CreateUserWithTokenAsync(Models.User userModel)
+    public async Task<ApiResponse<CreateUserResult>> CreateUserWithTokenAsync(CreateUserDto userModel)
     {
         // Check if user exists
         var userExists = await _userManager.FindByEmailAsync(userModel.Email);
@@ -42,7 +41,7 @@ public class UserService : IUserService
             Email = userModel.Email,
             SecurityStamp = Guid.NewGuid().ToString(),
             UserName = userModel.Username,
-            TwoFactorEnabled = true
+            TwoFactorEnabled = userModel.TwoFactorEnabled
         };
         
         // Create user
@@ -99,6 +98,27 @@ public class UserService : IUserService
             StatusCode = StatusCodes.Status200OK,
             Message = "Roles assigned successfully",
             Response = assignedRoles
+        };
+    }
+
+    public async Task<ApiResponse<string>> GetOtpByLoginAsync(LoginDto loginDto, IdentityUser user)
+    {
+        await _signInManager.SignOutAsync(); // Signs the current user out of the app.
+
+        await _signInManager.PasswordSignInAsync(
+            user,
+            password: loginDto.Password,
+            isPersistent: false, // whether the sign-in cookie should persist after the browser is closed
+            lockoutOnFailure: false); // whether the user account should be locked if the sign in fails
+
+        var token = await _userManager.GenerateTwoFactorTokenAsync(user, TokenOptions.DefaultEmailProvider);
+
+        return new ApiResponse<string>
+        {
+            IsSuccess = true,
+            StatusCode = StatusCodes.Status200OK,
+            Message = $"OTP generated successfully and ready to be sent to the user's email: {user.Email}",
+            Response = token
         };
     }
 }

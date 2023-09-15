@@ -1,6 +1,6 @@
 ﻿namespace User.Management.Service.Models;
 
-public class ApiResponse<T>
+public class ApiResponse<TResponse>
 {
     public bool IsSuccess { get; set; }
 
@@ -8,5 +8,5 @@ public class ApiResponse<T>
 
     public int StatusCode { get; set; }
     
-    public T? Response { get; set; }
+    public TResponse? Response { get; set; }
 }
